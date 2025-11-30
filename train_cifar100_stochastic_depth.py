@@ -164,7 +164,7 @@ def train_model(depth, sd_on, epochs, batch, pL, outdir):
     model = build_resnet(depth, sd_on, pL)
 
     model.compile(
-        optimizer=keras.optimizers.SGD(0.001, momentum=0.9, nesterov=True),
+        optimizer=keras.optimizers.SGD(0.1, momentum=0.9, nesterov=True),
         loss="sparse_categorical_crossentropy",
         metrics=["accuracy"]
     )
@@ -172,12 +172,12 @@ def train_model(depth, sd_on, epochs, batch, pL, outdir):
     os.makedirs(outdir, exist_ok=True)
 
     callbacks = [
-        # keras.callbacks.EarlyStopping(
-        #     monitor="val_accuracy", patience=20, restore_best_weights=True
-        # ),
-        # keras.callbacks.ReduceLROnPlateau(
-        #     monitor="val_loss", factor=0.1, patience=10, min_lr=1e-5
-        # ),
+        keras.callbacks.EarlyStopping(
+            monitor="val_accuracy", patience=20, restore_best_weights=True
+        ),
+        keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss", factor=0.1, patience=10, min_lr=1e-5
+        ),
         keras.callbacks.CSVLogger(os.path.join(outdir, f"history{outdir}.csv")),
         keras.callbacks.ModelCheckpoint(
             os.path.join(outdir, f"{outdir}.h5"),
