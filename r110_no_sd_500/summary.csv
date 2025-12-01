@@ -1,0 +1,2 @@
+sd_on,depth,pL,epochs,batch,train_time,test_loss,test_acc
+False,110,0.5,500,128,62252.163974523544,2.804694890975952,0.7038000226020813
