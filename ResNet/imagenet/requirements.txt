@@ -1,0 +1,13 @@
+# Requirements for training ResNet on Full ImageNet
+# Python 3.8+
+
+tensorflow>=2.12.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Optional but recommended for visualization
+# matplotlib>=3.7.0
+# seaborn>=0.12.0
+
+# For GPU support (highly recommended)
+# tensorflow[and-cuda]>=2.12.0
