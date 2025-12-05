@@ -53,7 +53,7 @@ DEFAULT_IMAGE_SIZE = 224
 DEFAULT_NUM_CLASSES = 1000
 DEFAULT_BATCH = 256  # for good hardware, can use 512 or 1024
 DEFAULT_EPOCHS = 120  # standard for ImageNet with modern techniques
-DEFAULT_LR = 0.4  # base_lr = 0.1 * (batch_size / 256), for batch=256 -> 0.1
+DEFAULT_LR = 0.1  # base learning rate for batch_size=256
 DEFAULT_MOMENTUM = 0.9
 DEFAULT_WEIGHT_DECAY = 1e-4
 WARMUP_EPOCHS = 5
@@ -306,15 +306,15 @@ def bottleneck_block(x, filters, stride, survival_prob, weight_decay, downsample
     shortcut = x
     
     # Pre-activation: BN -> ReLU before convolution
-    y = layers.BatchNormalization()(x)
-    y = layers.ReLU()(y)
+    x_preact = layers.BatchNormalization()(x)
+    x_preact = layers.ReLU()(x_preact)
     
     # 1x1 conv to reduce dimension
     y = layers.Conv2D(
         filters, 1, strides=1, padding='same',
         use_bias=False, kernel_initializer='he_normal',
         kernel_regularizer=keras.regularizers.l2(weight_decay)
-    )(y)
+    )(x_preact)
     
     # 3x3 conv
     y = layers.BatchNormalization()(y)
@@ -335,12 +335,13 @@ def bottleneck_block(x, filters, stride, survival_prob, weight_decay, downsample
     )(y)
     
     # Shortcut connection with projection if needed
+    # In full pre-activation, projection also uses pre-activated input
     if downsample or x.shape[-1] != filters * expansion:
         shortcut = layers.Conv2D(
             filters * expansion, 1, strides=stride, padding='same',
             use_bias=False, kernel_initializer='he_normal',
             kernel_regularizer=keras.regularizers.l2(weight_decay)
-        )(x)
+        )(x_preact)
     
     # Apply stochastic depth or regular residual connection
     if survival_prob < 1.0:

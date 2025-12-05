@@ -181,7 +181,7 @@ def run_parallel(args):
     
     with open(log1_path, 'w') as f1, open(log2_path, 'w') as f2:
         # Stream outputs
-        while True:
+        while process1.poll() is None or process2.poll() is None:
             out1 = process1.stdout.readline()
             out2 = process2.stdout.readline()
             
@@ -191,10 +191,12 @@ def run_parallel(args):
             if out2:
                 f2.write(out2)
                 f2.flush()
-            
-            # Check if both processes finished
-            if process1.poll() is not None and process2.poll() is not None:
-                break
+        
+        # Read any remaining output after processes finish
+        for line in process1.stdout:
+            f1.write(line)
+        for line in process2.stdout:
+            f2.write(line)
     
     # Get return codes
     ret1 = process1.returncode
