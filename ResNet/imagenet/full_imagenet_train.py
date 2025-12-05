@@ -83,14 +83,18 @@ class ModelConfig:
     use_mixed_precision: bool = True
     cache_dataset: bool = False
     seed: int = 42
+    auto_scale_lr: bool = True  # Whether to auto-scale LR based on batch size
     
     def __post_init__(self):
         if self.depth not in [50, 101, 152]:
             raise ValueError("Depth must be 50, 101, or 152 for ImageNet ResNet")
-        # Scale learning rate with batch size
+        # Scale learning rate with batch size if auto-scaling is enabled
         # Following the linear scaling rule: lr = base_lr * (batch_size / 256)
-        self.base_lr = 0.1 * (self.batch_size / 256.0)
-        print(f"Using learning rate: {self.base_lr} (scaled for batch size {self.batch_size})")
+        if self.auto_scale_lr:
+            self.base_lr = 0.1 * (self.batch_size / 256.0)
+            print(f"Auto-scaled learning rate: {self.base_lr} (for batch size {self.batch_size})")
+        else:
+            print(f"Using learning rate: {self.base_lr}")
 
 
 # ----------------------------
@@ -785,7 +789,8 @@ Examples:
         label_smoothing=args.label_smoothing,
         use_mixed_precision=not args.no_mixed_precision,
         cache_dataset=args.cache,
-        seed=args.seed
+        seed=args.seed,
+        auto_scale_lr=(args.lr is None)  # Only auto-scale if user didn't provide explicit LR
     )
     
     # Start training
