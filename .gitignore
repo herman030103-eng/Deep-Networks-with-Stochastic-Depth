@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# TensorFlow / Keras
+*.h5
+*.hdf5
+*.pb
+checkpoint
+saved_model/
+tensorboard_logs/
+tb_logs/
+
+# Training outputs
+results*/
+comparison_results/
+*.csv
+*.log
+
+# Dataset (do not commit large datasets)
+data/
+imagenet/
+tiny-imagenet/
+
+# OS
+.DS_Store
+Thumbs.db
