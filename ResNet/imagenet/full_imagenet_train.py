@@ -152,23 +152,8 @@ def make_datasets(config: ModelConfig):
     imagenet_mean = tf.constant([0.485, 0.456, 0.406], dtype=tf.float32)
     imagenet_std = tf.constant([0.229, 0.224, 0.225], dtype=tf.float32)
     
-    def prepare_image_train(example):
-        """Process training images from Hugging Face dataset."""
-        # Get image and label
-        image = example["image"]
-        label = example["label"]
-        
-        # Convert PIL image to numpy array
-        image = np.array(image.convert('RGB'))
-        
-        # Convert to TensorFlow tensor
-        image = tf.constant(image, dtype=tf.uint8)
-        label = tf.constant(label, dtype=tf.int32)
-        
-        return image, label
-    
-    def prepare_image_val(example):
-        """Process validation images from Hugging Face dataset."""
+    def prepare_image(example):
+        """Convert HF dataset example to TensorFlow tensors."""
         # Get image and label
         image = example["image"]
         label = example["label"]
@@ -230,14 +215,16 @@ def make_datasets(config: ModelConfig):
         return image, label
     
     # Convert Hugging Face datasets to TensorFlow datasets
+    # Shuffle the dataset once outside generator for efficiency
+    train_dataset_shuffled = train_dataset.shuffle(seed=seed)
+    
     def generator_train():
-        train_dataset_shuffled = train_dataset.shuffle(seed=seed)
         for example in train_dataset_shuffled:
-            yield prepare_image_train(example)
+            yield prepare_image(example)
     
     def generator_val():
         for example in val_dataset:
-            yield prepare_image_val(example)
+            yield prepare_image(example)
     
     # Create TensorFlow datasets
     train_ds = tf.data.Dataset.from_generator(
