@@ -80,8 +80,14 @@ class ModelConfig:
     momentum: float = DEFAULT_MOMENTUM
     weight_decay: float = DEFAULT_WEIGHT_DECAY
     mixup_alpha: float = 0.0
+    cutmix_alpha: float = 0.0  # CutMix augmentation (0 to disable)
+    randaugment_n: int = 0  # RandAugment number of transformations (0 to disable)
+    randaugment_m: int = 9  # RandAugment magnitude
     label_smoothing: float = 0.1
     use_mixed_precision: bool = True
+    use_ema: bool = False  # Exponential Moving Average of model weights
+    ema_decay: float = 0.9999  # EMA decay rate
+    grad_clip_norm: float = 0.0  # Gradient clipping (0 to disable)
     cache_dataset: bool = False
     seed: int = 42
     auto_scale_lr: bool = True  # Whether to auto-scale LR based on batch size
@@ -179,11 +185,15 @@ def make_datasets(config: ModelConfig):
         # Random horizontal flip
         image = tf.image.random_flip_left_right(image)
         
-        # Color jittering (brightness, contrast, saturation)
-        image = tf.image.random_brightness(image, 0.4)
-        image = tf.image.random_contrast(image, 0.8, 1.2)
-        image = tf.image.random_saturation(image, 0.8, 1.2)
-        image = tf.clip_by_value(image, 0.0, 1.0)
+        # Apply RandAugment if enabled
+        if config.randaugment_n > 0:
+            image = rand_augment_transform(image, config.randaugment_n, config.randaugment_m)
+        else:
+            # Standard color jittering (brightness, contrast, saturation)
+            image = tf.image.random_brightness(image, 0.4)
+            image = tf.image.random_contrast(image, 0.8, 1.2)
+            image = tf.image.random_saturation(image, 0.8, 1.2)
+            image = tf.clip_by_value(image, 0.0, 1.0)
         
         # Normalize with ImageNet statistics
         mean = tf.cast(imagenet_mean, image.dtype)
@@ -278,6 +288,97 @@ def mixup(batch_x, batch_y, alpha=0.2):
     mixed_y = lam * batch_y + (1 - lam) * tf.gather(batch_y, index)
     
     return mixed_x, mixed_y
+
+
+def cutmix(batch_x, batch_y, alpha=1.0):
+    """CutMix data augmentation.
+    
+    Cuts and pastes patches between training images.
+    Reference: "CutMix: Regularization Strategy to Train Strong Classifiers" (Yun et al., 2019)
+    """
+    if alpha <= 0.0:
+        return batch_x, batch_y
+    
+    batch_size = tf.shape(batch_x)[0]
+    image_h = tf.shape(batch_x)[1]
+    image_w = tf.shape(batch_x)[2]
+    
+    # Sample lambda from Beta distribution
+    lam = np.random.beta(alpha, alpha)
+    
+    # Sample random index for mixing
+    index = tf.random.shuffle(tf.range(batch_size))
+    
+    # Sample bounding box
+    cut_ratio = tf.math.sqrt(1.0 - lam)
+    cut_h = tf.cast(tf.cast(image_h, tf.float32) * cut_ratio, tf.int32)
+    cut_w = tf.cast(tf.cast(image_w, tf.float32) * cut_ratio, tf.int32)
+    
+    # Uniform random location
+    cx = tf.random.uniform([], 0, image_w, dtype=tf.int32)
+    cy = tf.random.uniform([], 0, image_h, dtype=tf.int32)
+    
+    # Bounding box coordinates
+    x1 = tf.clip_by_value(cx - cut_w // 2, 0, image_w)
+    y1 = tf.clip_by_value(cy - cut_h // 2, 0, image_h)
+    x2 = tf.clip_by_value(cx + cut_w // 2, 0, image_w)
+    y2 = tf.clip_by_value(cy + cut_h // 2, 0, image_h)
+    
+    # Create mask
+    mask_shape = tf.shape(batch_x)
+    mask = tf.ones(mask_shape, dtype=batch_x.dtype)
+    
+    # Zero out the cut region
+    updates = tf.zeros([batch_size, y2 - y1, x2 - x1, 3], dtype=batch_x.dtype)
+    mask_slice = mask[:, y1:y2, x1:x2, :]
+    mask = tf.tensor_scatter_nd_update(
+        mask,
+        [[i, y1, x1, 0] for i in range(batch_size)],
+        tf.zeros([batch_size], dtype=batch_x.dtype)
+    )
+    
+    # Apply CutMix
+    mixed_x = mask * batch_x + (1 - mask) * tf.gather(batch_x, index)
+    
+    # Adjust lambda based on actual cut area
+    actual_lam = 1.0 - (tf.cast((x2 - x1) * (y2 - y1), tf.float32) / 
+                        tf.cast(image_h * image_w, tf.float32))
+    
+    # Mix labels
+    mixed_y = actual_lam * batch_y + (1 - actual_lam) * tf.gather(batch_y, index)
+    
+    return mixed_x, mixed_y
+
+
+def rand_augment_transform(image, num_layers=2, magnitude=9):
+    """Apply RandAugment transformations.
+    
+    Reference: "RandAugment: Practical automated data augmentation" (Cubuk et al., 2020)
+    """
+    if num_layers <= 0:
+        return image
+    
+    # Available augmentation operations
+    augmentations = [
+        lambda img: tf.image.random_brightness(img, magnitude / 30.0),
+        lambda img: tf.image.random_contrast(img, 1 - magnitude / 30.0, 1 + magnitude / 30.0),
+        lambda img: tf.image.random_saturation(img, 1 - magnitude / 30.0, 1 + magnitude / 30.0),
+        lambda img: tf.image.random_hue(img, magnitude / 60.0),
+    ]
+    
+    # Randomly select and apply num_layers augmentations
+    for _ in range(num_layers):
+        op_idx = tf.random.uniform([], 0, len(augmentations), dtype=tf.int32)
+        
+        # Apply selected operation
+        for idx, aug_fn in enumerate(augmentations):
+            image = tf.cond(
+                tf.equal(op_idx, idx),
+                lambda: aug_fn(image),
+                lambda: image
+            )
+    
+    return tf.clip_by_value(image, 0.0, 1.0)
 
 
 # ----------------------------
@@ -521,6 +622,45 @@ class WarmupCosineDecay(tf.keras.optimizers.schedules.LearningRateSchedule):
 
 
 # ----------------------------
+# EMA (Exponential Moving Average) Callback
+# ----------------------------
+class EMACallback(keras.callbacks.Callback):
+    """Maintains exponential moving average of model weights.
+    
+    EMA improves model generalization by smoothing weight updates.
+    Reference: "Mean teachers are better role models" (Tarvainen & Valpola, 2017)
+    """
+    def __init__(self, decay=0.9999):
+        super().__init__()
+        self.decay = decay
+        self.ema_weights = None
+    
+    def on_train_begin(self, logs=None):
+        # Initialize EMA weights
+        self.ema_weights = [tf.Variable(w, trainable=False) for w in self.model.weights]
+    
+    def on_train_batch_end(self, batch, logs=None):
+        # Update EMA weights
+        for ema_w, model_w in zip(self.ema_weights, self.model.weights):
+            ema_w.assign(self.decay * ema_w + (1 - self.decay) * model_w)
+    
+    def on_epoch_end(self, epoch, logs=None):
+        # Optionally swap to EMA weights for validation
+        # (Can be done at the end of training)
+        pass
+    
+    def apply_ema_weights(self):
+        """Apply EMA weights to the model."""
+        for ema_w, model_w in zip(self.ema_weights, self.model.weights):
+            model_w.assign(ema_w)
+    
+    def restore_original_weights(self, original_weights):
+        """Restore original weights."""
+        for orig_w, model_w in zip(original_weights, self.model.weights):
+            model_w.assign(orig_w)
+
+
+# ----------------------------
 # Training function
 # ----------------------------
 def train_model(config: ModelConfig):
@@ -551,8 +691,14 @@ def train_model(config: ModelConfig):
     print(f"Base Learning Rate: {config.base_lr}")
     print(f"Weight Decay: {config.weight_decay}")
     print(f"MixUp Alpha: {config.mixup_alpha}")
+    print(f"CutMix Alpha: {config.cutmix_alpha}")
+    if config.randaugment_n > 0:
+        print(f"RandAugment: N={config.randaugment_n}, M={config.randaugment_m}")
     print(f"Label Smoothing: {config.label_smoothing}")
-    print(f"Mixed Precision: {config.use_mixed_precision}")
+    print(f"Mixed Precision (FP16): {config.use_mixed_precision}")
+    print(f"EMA: {config.use_ema}" + (f" (decay={config.ema_decay})" if config.use_ema else ""))
+    if config.grad_clip_norm > 0:
+        print(f"Gradient Clipping: {config.grad_clip_norm}")
     print("="*80 + "\n")
     
     # Load datasets
@@ -583,7 +729,8 @@ def train_model(config: ModelConfig):
     optimizer = tf.keras.optimizers.SGD(
         learning_rate=lr_schedule,
         momentum=config.momentum,
-        nesterov=True
+        nesterov=True,
+        clipnorm=config.grad_clip_norm if config.grad_clip_norm > 0 else None
     )
     
     # Loss function with label smoothing
@@ -644,6 +791,13 @@ def train_model(config: ModelConfig):
         keras.callbacks.TerminateOnNaN(),
     ]
     
+    # Add EMA callback if enabled
+    ema_callback = None
+    if config.use_ema:
+        print(f"✓ Using EMA (Exponential Moving Average) with decay={config.ema_decay}\n")
+        ema_callback = EMACallback(decay=config.ema_decay)
+        callbacks.append(ema_callback)
+    
     # Add early stopping for efficiency (optional)
     # callbacks.append(keras.callbacks.EarlyStopping(
     #     monitor='val_accuracy',
@@ -651,23 +805,51 @@ def train_model(config: ModelConfig):
     #     restore_best_weights=True
     # ))
     
-    # Apply MixUp if enabled
-    if config.mixup_alpha > 0.0:
-        print(f"✓ Applying MixUp augmentation (alpha={config.mixup_alpha})\n")
+    # Apply MixUp/CutMix if enabled
+    use_augmentation = config.mixup_alpha > 0.0 or config.cutmix_alpha > 0.0
+    if use_augmentation:
+        if config.mixup_alpha > 0.0 and config.cutmix_alpha > 0.0:
+            print(f"✓ Applying MixUp (alpha={config.mixup_alpha}) and CutMix (alpha={config.cutmix_alpha})\n")
+        elif config.mixup_alpha > 0.0:
+            print(f"✓ Applying MixUp augmentation (alpha={config.mixup_alpha})\n")
+        else:
+            print(f"✓ Applying CutMix augmentation (alpha={config.cutmix_alpha})\n")
         
-        def mixup_generator(ds):
+        def augmentation_generator(ds):
             for batch_x, batch_y in ds:
-                x, y = tf.numpy_function(
-                    func=lambda bx, by: mixup(bx, by, config.mixup_alpha),
-                    inp=[batch_x, batch_y],
-                    Tout=[tf.float32, tf.float32]
-                )
+                # Randomly choose between MixUp and CutMix if both enabled
+                if config.mixup_alpha > 0.0 and config.cutmix_alpha > 0.0:
+                    use_mixup = np.random.rand() < 0.5
+                    if use_mixup:
+                        x, y = tf.numpy_function(
+                            func=lambda bx, by: mixup(bx, by, config.mixup_alpha),
+                            inp=[batch_x, batch_y],
+                            Tout=[tf.float32, tf.float32]
+                        )
+                    else:
+                        x, y = tf.numpy_function(
+                            func=lambda bx, by: cutmix(bx, by, config.cutmix_alpha),
+                            inp=[batch_x, batch_y],
+                            Tout=[tf.float32, tf.float32]
+                        )
+                elif config.mixup_alpha > 0.0:
+                    x, y = tf.numpy_function(
+                        func=lambda bx, by: mixup(bx, by, config.mixup_alpha),
+                        inp=[batch_x, batch_y],
+                        Tout=[tf.float32, tf.float32]
+                    )
+                else:
+                    x, y = tf.numpy_function(
+                        func=lambda bx, by: cutmix(bx, by, config.cutmix_alpha),
+                        inp=[batch_x, batch_y],
+                        Tout=[tf.float32, tf.float32]
+                    )
                 x.set_shape([None, config.image_size, config.image_size, 3])
                 y.set_shape([None, config.num_classes])
                 yield x, y
         
         train_for_fit = tf.data.Dataset.from_generator(
-            lambda: mixup_generator(train_ds),
+            lambda: augmentation_generator(train_ds),
             output_signature=(
                 tf.TensorSpec(shape=(None, config.image_size, config.image_size, 3), dtype=tf.float32),
                 tf.TensorSpec(shape=(None, config.num_classes), dtype=tf.float32)
@@ -763,9 +945,10 @@ Examples:
   # Train ResNet-50 with stochastic depth
   python full_imagenet_train.py --out ./results_sd --sd 1 --pL 0.5
   
-  # Train ResNet-101 with all modern techniques
+  # Train ResNet-101 with all modern techniques (best accuracy)
   python full_imagenet_train.py --depth 101 --sd 1 --pL 0.5 \\
-      --mixup 0.2 --label_smoothing 0.1 --batch 512 --epochs 120
+      --mixup 0.2 --cutmix 1.0 --randaugment_n 2 --label_smoothing 0.1 \\
+      --use_ema --grad_clip 1.0 --batch 256 --epochs 120
 
 Note: This script uses Hugging Face datasets to load ImageNet (ILSVRC/imagenet-1k).
       You need to:
@@ -804,10 +987,24 @@ Note: This script uses Hugging Face datasets to load ImageNet (ILSVRC/imagenet-1
     # Regularization and augmentation
     parser.add_argument('--mixup', type=float, default=0.0,
                        help='MixUp alpha parameter (0 to disable, typical: 0.2)')
+    parser.add_argument('--cutmix', type=float, default=0.0,
+                       help='CutMix alpha parameter (0 to disable, typical: 1.0)')
+    parser.add_argument('--randaugment_n', type=int, default=0,
+                       help='RandAugment N (number of transformations, 0 to disable, typical: 2)')
+    parser.add_argument('--randaugment_m', type=int, default=9,
+                       help='RandAugment M (magnitude, typical: 9)')
     parser.add_argument('--label_smoothing', type=float, default=0.1,
                        help='Label smoothing factor (default: 0.1)')
     parser.add_argument('--weight_decay', type=float, default=DEFAULT_WEIGHT_DECAY,
                        help=f'Weight decay (L2 regularization) (default: {DEFAULT_WEIGHT_DECAY})')
+    
+    # Advanced training techniques
+    parser.add_argument('--use_ema', action='store_true',
+                       help='Use Exponential Moving Average of model weights')
+    parser.add_argument('--ema_decay', type=float, default=0.9999,
+                       help='EMA decay rate (default: 0.9999)')
+    parser.add_argument('--grad_clip', type=float, default=0.0,
+                       help='Gradient clipping norm (0 to disable, typical: 1.0)')
     
     # Performance options
     parser.add_argument('--no_mixed_precision', action='store_true',
@@ -833,8 +1030,14 @@ Note: This script uses Hugging Face datasets to load ImageNet (ILSVRC/imagenet-1
         base_lr=args.lr if args.lr is not None else DEFAULT_LR,
         weight_decay=args.weight_decay,
         mixup_alpha=args.mixup,
+        cutmix_alpha=args.cutmix,
+        randaugment_n=args.randaugment_n,
+        randaugment_m=args.randaugment_m,
         label_smoothing=args.label_smoothing,
         use_mixed_precision=not args.no_mixed_precision,
+        use_ema=args.use_ema,
+        ema_decay=args.ema_decay,
+        grad_clip_norm=args.grad_clip,
         cache_dataset=args.cache,
         seed=args.seed,
         auto_scale_lr=(args.lr is None)  # Only auto-scale if user didn't provide explicit LR
