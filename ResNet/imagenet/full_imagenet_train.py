@@ -45,6 +45,7 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 import pandas as pd
+from datasets import load_dataset
 
 # ----------------------------
 # Default Hyperparameters (optimized for ImageNet)
@@ -66,8 +67,8 @@ SHUFFLE_BUFFER = 10000  # for ImageNet can be smaller
 @dataclass
 class ModelConfig:
     """Configuration for ResNet ImageNet training."""
-    data_dir: str
     output_dir: str
+    data_dir: Optional[str] = None  # No longer required - using Hugging Face datasets
     image_size: int = DEFAULT_IMAGE_SIZE
     num_classes: int = DEFAULT_NUM_CLASSES
     depth: int = 50  # 50 or 101 for standard ImageNet ResNets
@@ -116,107 +117,158 @@ class LrCallback(keras.callbacks.Callback):
 
 
 # ----------------------------
-# Data loading & augmentation for ImageNet
+# Data loading & augmentation for ImageNet using Hugging Face datasets
 # ----------------------------
 def make_datasets(config: ModelConfig):
-    """Create training and validation datasets for ImageNet.
+    """Create training and validation datasets for ImageNet using Hugging Face datasets.
     
-    Implements standard ImageNet data augmentation:
+    Loads ImageNet from Hugging Face Hub (ILSVRC/imagenet-1k) and applies:
     - Training: RandomResizedCrop, RandomFlip, ColorJitter, Normalization
     - Validation: Resize, CenterCrop, Normalization
     """
     seed = config.seed
     image_size = config.image_size
     
-    train_dir = os.path.join(config.data_dir, "train")
-    val_dir = os.path.join(config.data_dir, "val")
+    print("Loading ImageNet dataset from Hugging Face Hub...")
+    print("Note: First time loading will download ~150GB. Subsequent runs will use cache.")
     
-    if not os.path.isdir(train_dir) or not os.path.isdir(val_dir):
-        raise ValueError(
-            f"data_dir must contain 'train' and 'val' directories.\n"
-            f"Expected structure:\n"
-            f"  {config.data_dir}/train/n01440764/image1.JPEG\n"
-            f"  {config.data_dir}/val/n01440764/image2.JPEG"
-        )
-    
-    # Load datasets
-    train_ds = tf.keras.utils.image_dataset_from_directory(
-        train_dir,
-        labels="inferred",
-        label_mode="int",
-        batch_size=config.batch_size,
-        image_size=(image_size, image_size),
-        shuffle=True,
-        seed=seed,
-        interpolation='bilinear'
-    )
-    
-    val_ds = tf.keras.utils.image_dataset_from_directory(
-        val_dir,
-        labels="inferred",
-        label_mode="int",
-        batch_size=config.batch_size,
-        image_size=(image_size, image_size),
-        shuffle=False,
-        interpolation='bilinear'
-    )
+    # Load ImageNet from Hugging Face
+    # Login using `huggingface-cli login` to access this dataset
+    try:
+        dataset = load_dataset("ILSVRC/imagenet-1k", trust_remote_code=True)
+        train_dataset = dataset["train"]
+        val_dataset = dataset["validation"]
+        print(f"✓ Loaded ImageNet: {len(train_dataset)} train, {len(val_dataset)} validation images")
+    except Exception as e:
+        print(f"Error loading dataset: {e}")
+        print("\nTo use this dataset, you need to:")
+        print("1. Accept the terms at: https://huggingface.co/datasets/ILSVRC/imagenet-1k")
+        print("2. Login with: huggingface-cli login")
+        raise
     
     AUTOTUNE = tf.data.AUTOTUNE
-    
-    # Optional caching (requires lots of RAM for ImageNet)
-    if config.cache_dataset:
-        print("Caching datasets in memory (requires ~150GB RAM for ImageNet)")
-        train_ds = train_ds.cache()
-        val_ds = val_ds.cache()
     
     # ImageNet normalization (mean and std from ImageNet statistics)
     imagenet_mean = tf.constant([0.485, 0.456, 0.406], dtype=tf.float32)
     imagenet_std = tf.constant([0.229, 0.224, 0.225], dtype=tf.float32)
     
-    def train_preprocess(x, y):
-        """Training augmentation pipeline."""
-        # Convert to float and scale to [0,1]
-        x = tf.cast(x, tf.float32) / 255.0
+    def prepare_image_train(example):
+        """Process training images from Hugging Face dataset."""
+        # Get image and label
+        image = example["image"]
+        label = example["label"]
         
-        # Random resized crop (equivalent to RandomResizedCrop in PyTorch)
-        # This is already done by image_dataset_from_directory, but we can add more augmentation
+        # Convert PIL image to numpy array
+        image = np.array(image.convert('RGB'))
+        
+        # Convert to TensorFlow tensor
+        image = tf.constant(image, dtype=tf.uint8)
+        label = tf.constant(label, dtype=tf.int32)
+        
+        return image, label
+    
+    def prepare_image_val(example):
+        """Process validation images from Hugging Face dataset."""
+        # Get image and label
+        image = example["image"]
+        label = example["label"]
+        
+        # Convert PIL image to numpy array
+        image = np.array(image.convert('RGB'))
+        
+        # Convert to TensorFlow tensor
+        image = tf.constant(image, dtype=tf.uint8)
+        label = tf.constant(label, dtype=tf.int32)
+        
+        return image, label
+    
+    def augment_train(image, label):
+        """Training augmentation pipeline."""
+        # Resize and random crop
+        image = tf.image.resize(image, [image_size + 32, image_size + 32])
+        image = tf.image.random_crop(image, [image_size, image_size, 3])
+        
+        # Convert to float and scale to [0,1]
+        image = tf.cast(image, tf.float32) / 255.0
+        
         # Random horizontal flip
-        x = tf.image.random_flip_left_right(x)
+        image = tf.image.random_flip_left_right(image)
         
         # Color jittering (brightness, contrast, saturation)
-        x = tf.image.random_brightness(x, 0.4)
-        x = tf.image.random_contrast(x, 0.8, 1.2)
-        x = tf.image.random_saturation(x, 0.8, 1.2)
-        x = tf.clip_by_value(x, 0.0, 1.0)
+        image = tf.image.random_brightness(image, 0.4)
+        image = tf.image.random_contrast(image, 0.8, 1.2)
+        image = tf.image.random_saturation(image, 0.8, 1.2)
+        image = tf.clip_by_value(image, 0.0, 1.0)
         
         # Normalize with ImageNet statistics
-        mean = tf.cast(imagenet_mean, x.dtype)
-        std = tf.cast(imagenet_std, x.dtype)
-        x = (x - mean) / std
+        mean = tf.cast(imagenet_mean, image.dtype)
+        std = tf.cast(imagenet_std, image.dtype)
+        image = (image - mean) / std
         
         # Convert labels to one-hot for label smoothing and mixup
-        y = tf.one_hot(y, config.num_classes)
-        return x, y
+        label = tf.one_hot(label, config.num_classes)
+        
+        return image, label
     
-    def val_preprocess(x, y):
+    def augment_val(image, label):
         """Validation preprocessing (no augmentation)."""
+        # Resize to slightly larger then center crop
+        image = tf.image.resize(image, [int(image_size * 1.15), int(image_size * 1.15)])
+        image = tf.image.resize_with_crop_or_pad(image, image_size, image_size)
+        
         # Convert to float and scale to [0,1]
-        x = tf.cast(x, tf.float32) / 255.0
+        image = tf.cast(image, tf.float32) / 255.0
         
         # Normalize with ImageNet statistics
-        mean = tf.cast(imagenet_mean, x.dtype)
-        std = tf.cast(imagenet_std, x.dtype)
-        x = (x - mean) / std
+        mean = tf.cast(imagenet_mean, image.dtype)
+        std = tf.cast(imagenet_std, image.dtype)
+        image = (image - mean) / std
         
         # Convert labels to one-hot
-        y = tf.one_hot(y, config.num_classes)
-        return x, y
+        label = tf.one_hot(label, config.num_classes)
+        
+        return image, label
     
-    train_ds = train_ds.map(train_preprocess, num_parallel_calls=AUTOTUNE)
-    val_ds = val_ds.map(val_preprocess, num_parallel_calls=AUTOTUNE)
+    # Convert Hugging Face datasets to TensorFlow datasets
+    def generator_train():
+        train_dataset_shuffled = train_dataset.shuffle(seed=seed)
+        for example in train_dataset_shuffled:
+            yield prepare_image_train(example)
     
-    train_ds = train_ds.shuffle(SHUFFLE_BUFFER).prefetch(AUTOTUNE)
-    val_ds = val_ds.prefetch(AUTOTUNE)
+    def generator_val():
+        for example in val_dataset:
+            yield prepare_image_val(example)
+    
+    # Create TensorFlow datasets
+    train_ds = tf.data.Dataset.from_generator(
+        generator_train,
+        output_signature=(
+            tf.TensorSpec(shape=(None, None, 3), dtype=tf.uint8),
+            tf.TensorSpec(shape=(), dtype=tf.int32)
+        )
+    )
+    
+    val_ds = tf.data.Dataset.from_generator(
+        generator_val,
+        output_signature=(
+            tf.TensorSpec(shape=(None, None, 3), dtype=tf.uint8),
+            tf.TensorSpec(shape=(), dtype=tf.int32)
+        )
+    )
+    
+    # Apply augmentation and batching
+    train_ds = train_ds.map(augment_train, num_parallel_calls=AUTOTUNE)
+    val_ds = val_ds.map(augment_val, num_parallel_calls=AUTOTUNE)
+    
+    # Batch and prefetch
+    train_ds = train_ds.batch(config.batch_size).prefetch(AUTOTUNE)
+    val_ds = val_ds.batch(config.batch_size).prefetch(AUTOTUNE)
+    
+    # Optional caching (requires lots of RAM for ImageNet)
+    if config.cache_dataset:
+        print("⚠ Warning: Caching ImageNet requires ~150GB RAM")
+        train_ds = train_ds.cache()
+        val_ds = val_ds.cache()
     
     return train_ds, val_ds
 
@@ -505,7 +557,7 @@ def train_model(config: ModelConfig):
     print(f"Stochastic Depth: {'Enabled' if config.sd_on else 'Disabled'}")
     if config.sd_on:
         print(f"Final Survival Probability: {config.final_survival_prob}")
-    print(f"Dataset: ImageNet ({config.data_dir})")
+    print(f"Dataset: ImageNet (Hugging Face ILSVRC/imagenet-1k)")
     print(f"Image Size: {config.image_size}x{config.image_size}")
     print(f"Batch Size: {config.batch_size}")
     print(f"Epochs: {config.epochs}")
@@ -714,28 +766,35 @@ def save_training_summary(config: ModelConfig, elapsed_time: float,
 # ----------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Train ResNet with/without Stochastic Depth on Full ImageNet',
+        description='Train ResNet with/without Stochastic Depth on Full ImageNet using Hugging Face datasets',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Train ResNet-50 baseline (no stochastic depth)
-  python full_imagenet_train.py --data_dir /data/imagenet --out ./results_baseline --sd 0
+  python full_imagenet_train.py --out ./results_baseline --sd 0
   
   # Train ResNet-50 with stochastic depth
-  python full_imagenet_train.py --data_dir /data/imagenet --out ./results_sd --sd 1 --pL 0.5
+  python full_imagenet_train.py --out ./results_sd --sd 1 --pL 0.5
   
   # Train ResNet-101 with all modern techniques
-  python full_imagenet_train.py --data_dir /data/imagenet --depth 101 --sd 1 --pL 0.5 \\
+  python full_imagenet_train.py --depth 101 --sd 1 --pL 0.5 \\
       --mixup 0.2 --label_smoothing 0.1 --batch 512 --epochs 120
+
+Note: This script uses Hugging Face datasets to load ImageNet (ILSVRC/imagenet-1k).
+      You need to:
+      1. Accept terms at: https://huggingface.co/datasets/ILSVRC/imagenet-1k
+      2. Login with: huggingface-cli login
         """
     )
     
     # Required arguments
-    parser.add_argument('--data_dir', type=str, required=True,
-                       help='Path to ImageNet dataset root (must contain train/ and val/ subdirectories)')
     parser.add_argument('--out', '--output_dir', dest='output_dir', type=str, 
                        default='./results_imagenet',
                        help='Output directory for checkpoints and logs (default: ./results_imagenet)')
+    
+    # Data (optional - kept for backward compatibility)
+    parser.add_argument('--data_dir', type=str, default=None,
+                       help='[DEPRECATED] Not used - ImageNet is loaded from Hugging Face Hub')
     
     # Model architecture
     parser.add_argument('--depth', type=int, default=50, choices=[50, 101, 152],

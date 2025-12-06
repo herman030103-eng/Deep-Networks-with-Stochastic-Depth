@@ -24,7 +24,6 @@ def create_training_config(base_dir, model_name, sd_enabled, args):
     cmd = [
         sys.executable,
         "full_imagenet_train.py",
-        "--data_dir", args.data_dir,
         "--out", output_dir,
         "--depth", str(args.depth),
         "--sd", "1" if sd_enabled else "0",
@@ -225,25 +224,28 @@ def run_parallel(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Train and compare ResNet models with and without Stochastic Depth',
+        description='Train and compare ResNet models with and without Stochastic Depth using Hugging Face datasets',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Sequential training (one after another)
-  python compare_training.py --data_dir /data/imagenet --mode sequential
+  python compare_training.py --mode sequential
   
   # Parallel training (simultaneous, requires 2 GPUs)
-  python compare_training.py --data_dir /data/imagenet --mode parallel --gpu_split
+  python compare_training.py --mode parallel --gpu_split
   
   # Custom configuration
-  python compare_training.py --data_dir /data/imagenet --depth 101 --batch 512 \\
+  python compare_training.py --depth 101 --batch 512 \\
       --epochs 120 --mixup 0.2 --label_smoothing 0.1
+
+Note: This script uses Hugging Face datasets to load ImageNet.
+      You need to login first: huggingface-cli login
         """
     )
     
-    # Required
-    parser.add_argument('--data_dir', type=str, required=True,
-                       help='Path to ImageNet dataset')
+    # Data (optional - kept for backward compatibility)
+    parser.add_argument('--data_dir', type=str, default=None,
+                       help='[DEPRECATED] Not used - ImageNet is loaded from Hugging Face Hub')
     
     # Training mode
     parser.add_argument('--mode', type=str, default='sequential',
@@ -287,7 +289,7 @@ Examples:
     print("RESNET COMPARISON TRAINING")
     print("="*80)
     print("\nConfiguration:")
-    print(f"  Dataset: {args.data_dir}")
+    print(f"  Dataset: ImageNet (Hugging Face ILSVRC/imagenet-1k)")
     print(f"  Mode: {args.mode}")
     print(f"  ResNet Depth: {args.depth}")
     print(f"  Epochs: {args.epochs}")
@@ -297,18 +299,6 @@ Examples:
     print(f"  Stochastic Depth pL: {args.pL}")
     print(f"  Output: {args.output_base}")
     print()
-    
-    # Check data directory
-    if not os.path.isdir(args.data_dir):
-        print(f"❌ Error: Data directory not found: {args.data_dir}")
-        return 1
-    
-    train_dir = os.path.join(args.data_dir, 'train')
-    val_dir = os.path.join(args.data_dir, 'val')
-    
-    if not os.path.isdir(train_dir) or not os.path.isdir(val_dir):
-        print(f"❌ Error: Expected 'train' and 'val' subdirectories in {args.data_dir}")
-        return 1
     
     # Run training
     if args.mode == 'sequential':

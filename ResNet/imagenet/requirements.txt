@@ -4,6 +4,8 @@
 tensorflow>=2.12.0
 numpy>=1.24.0
 pandas>=2.0.0
+datasets>=2.14.0  # For Hugging Face datasets
+huggingface-hub>=0.16.0  # For authentication
 
 # Optional but recommended for visualization
 # matplotlib>=3.7.0
