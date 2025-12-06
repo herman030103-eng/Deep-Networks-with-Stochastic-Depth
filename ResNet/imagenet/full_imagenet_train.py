@@ -303,8 +303,8 @@ def cutmix(batch_x, batch_y, alpha=1.0):
     image_h = tf.shape(batch_x)[1]
     image_w = tf.shape(batch_x)[2]
     
-    # Sample lambda from Beta distribution
-    lam = np.random.beta(alpha, alpha)
+    # Sample lambda using TensorFlow for reproducibility
+    lam = tf.random.uniform([], minval=0, maxval=1, dtype=tf.float32)
     
     # Sample random index for mixing
     index = tf.random.shuffle(tf.range(batch_size))
@@ -324,28 +324,31 @@ def cutmix(batch_x, batch_y, alpha=1.0):
     x2 = tf.clip_by_value(cx + cut_w // 2, 0, image_w)
     y2 = tf.clip_by_value(cy + cut_h // 2, 0, image_h)
     
-    # Create mask
-    mask_shape = tf.shape(batch_x)
-    mask = tf.ones(mask_shape, dtype=batch_x.dtype)
+    # Create binary mask for the cut region using mesh grid
+    mask_h = tf.range(image_h)
+    mask_w = tf.range(image_w)
+    mask_h_grid = tf.reshape(mask_h, [-1, 1])
+    mask_w_grid = tf.reshape(mask_w, [1, -1])
     
-    # Zero out the cut region
-    updates = tf.zeros([batch_size, y2 - y1, x2 - x1, 3], dtype=batch_x.dtype)
-    mask_slice = mask[:, y1:y2, x1:x2, :]
-    mask = tf.tensor_scatter_nd_update(
-        mask,
-        [[i, y1, x1, 0] for i in range(batch_size)],
-        tf.zeros([batch_size], dtype=batch_x.dtype)
-    )
+    # Create boolean masks for the cut region
+    h_mask = tf.logical_and(mask_h_grid >= y1, mask_h_grid < y2)
+    w_mask = tf.logical_and(mask_w_grid >= x1, mask_w_grid < x2)
+    cut_mask = tf.logical_and(h_mask, w_mask)
+    cut_mask = tf.cast(cut_mask, batch_x.dtype)
+    cut_mask = tf.reshape(cut_mask, [1, image_h, image_w, 1])
+    
+    # Invert mask: 1 outside cut region, 0 inside
+    mask = 1.0 - cut_mask
     
     # Apply CutMix
-    mixed_x = mask * batch_x + (1 - mask) * tf.gather(batch_x, index)
+    mixed_x = mask * batch_x + (1.0 - mask) * tf.gather(batch_x, index)
     
     # Adjust lambda based on actual cut area
     actual_lam = 1.0 - (tf.cast((x2 - x1) * (y2 - y1), tf.float32) / 
                         tf.cast(image_h * image_w, tf.float32))
     
     # Mix labels
-    mixed_y = actual_lam * batch_y + (1 - actual_lam) * tf.gather(batch_y, index)
+    mixed_y = actual_lam * batch_y + (1.0 - actual_lam) * tf.gather(batch_y, index)
     
     return mixed_x, mixed_y
 
@@ -819,32 +822,24 @@ def train_model(config: ModelConfig):
             for batch_x, batch_y in ds:
                 # Randomly choose between MixUp and CutMix if both enabled
                 if config.mixup_alpha > 0.0 and config.cutmix_alpha > 0.0:
-                    use_mixup = np.random.rand() < 0.5
-                    if use_mixup:
-                        x, y = tf.numpy_function(
-                            func=lambda bx, by: mixup(bx, by, config.mixup_alpha),
-                            inp=[batch_x, batch_y],
-                            Tout=[tf.float32, tf.float32]
-                        )
-                    else:
-                        x, y = tf.numpy_function(
-                            func=lambda bx, by: cutmix(bx, by, config.cutmix_alpha),
-                            inp=[batch_x, batch_y],
-                            Tout=[tf.float32, tf.float32]
-                        )
+                    # Use TensorFlow random for better reproducibility
+                    use_mixup_t = tf.random.uniform([]) < 0.5
+                    
+                    def apply_mixup():
+                        return mixup(batch_x, batch_y, config.mixup_alpha)
+                    
+                    def apply_cutmix():
+                        return cutmix(batch_x, batch_y, config.cutmix_alpha)
+                    
+                    x, y = tf.cond(use_mixup_t, apply_mixup, apply_cutmix)
                 elif config.mixup_alpha > 0.0:
-                    x, y = tf.numpy_function(
-                        func=lambda bx, by: mixup(bx, by, config.mixup_alpha),
-                        inp=[batch_x, batch_y],
-                        Tout=[tf.float32, tf.float32]
-                    )
+                    x, y = mixup(batch_x, batch_y, config.mixup_alpha)
                 else:
-                    x, y = tf.numpy_function(
-                        func=lambda bx, by: cutmix(bx, by, config.cutmix_alpha),
-                        inp=[batch_x, batch_y],
-                        Tout=[tf.float32, tf.float32]
-                    )
+                    x, y = cutmix(batch_x, batch_y, config.cutmix_alpha)
+                
                 x.set_shape([None, config.image_size, config.image_size, 3])
+                y.set_shape([None, config.num_classes])
+                yield x, y
                 y.set_shape([None, config.num_classes])
                 yield x, y
         
