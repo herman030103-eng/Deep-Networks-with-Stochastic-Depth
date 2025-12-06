@@ -1,6 +1,6 @@
 # Training ResNet on Full ImageNet with Stochastic Depth
 
-This directory contains the implementation for training ResNet models with and without Stochastic Depth on the full ImageNet (ILSVRC 2012) dataset.
+This directory contains the implementation for training ResNet models with and without Stochastic Depth on the full ImageNet (ILSVRC 2012) dataset using **Hugging Face datasets**.
 
 ## Overview
 
@@ -14,47 +14,63 @@ The `full_imagenet_train.py` script provides:
   - Label smoothing
   - Weight decay regularization
 - **Optimized for high-end hardware** (multi-GPU support via TensorFlow)
+- **Easy dataset access** via Hugging Face Hub (no manual download needed)
 
 ## Dataset Preparation
 
-### ImageNet (ILSVRC 2012) Dataset Structure
+### Using Hugging Face Datasets (Recommended)
 
-Download the ImageNet dataset from the [official source](http://www.image-net.org/) or [Kaggle](https://www.kaggle.com/c/imagenet-object-localization-challenge).
+The script now uses Hugging Face datasets to automatically load ImageNet:
 
-Expected directory structure:
+**Setup (one-time):**
+1. Accept the dataset terms at: https://huggingface.co/datasets/ILSVRC/imagenet-1k
+2. Login to Hugging Face:
+   ```bash
+   huggingface-cli login
+   ```
+
+That's it! The dataset will be automatically downloaded and cached on first use (~150GB).
+
+**Advantages:**
+- ✅ No manual dataset download or organization
+- ✅ Automatic caching for subsequent runs
+- ✅ Better reproducibility (everyone uses the same source)
+- ✅ Simpler setup
+
+### Alternative: Local Dataset (Legacy)
+
+If you prefer to use a local dataset, you can still organize it manually (though the `--data_dir` parameter is now deprecated):
+
 ```
 /path/to/imagenet/
 ├── train/
 │   ├── n01440764/
 │   │   ├── n01440764_10026.JPEG
-│   │   ├── n01440764_10027.JPEG
-│   │   └── ...
-│   ├── n01443537/
 │   │   └── ...
 │   └── ... (1000 classes)
 └── val/
     ├── n01440764/
     │   ├── ILSVRC2012_val_00000293.JPEG
-    │   ├── ILSVRC2012_val_00002138.JPEG
-    │   └── ...
-    ├── n01443537/
     │   └── ...
     └── ... (1000 classes)
 ```
 
-**Important:**
-- Training set: ~1.28 million images across 1000 classes
-- Validation set: 50,000 images (50 per class)
-- Images should be organized in class subdirectories
-- Class directory names should be WordNet IDs (e.g., n01440764)
+**Note:** The local file approach is deprecated and will be removed in future versions.
 
 ## Installation
 
 ### Requirements
 
+Install dependencies:
 ```bash
-# Python 3.8+
+pip install -r requirements.txt
+```
+
+Or install manually:
+```bash
 pip install tensorflow>=2.12.0
+pip install datasets>=2.14.0
+pip install huggingface-hub>=0.16.0
 pip install pandas
 pip install numpy
 ```
@@ -63,6 +79,15 @@ For GPU support (highly recommended):
 ```bash
 pip install tensorflow[and-cuda]>=2.12.0
 ```
+
+### Setup Hugging Face Access
+
+1. Create account at https://huggingface.co/
+2. Accept dataset terms at https://huggingface.co/datasets/ILSVRC/imagenet-1k
+3. Login via CLI:
+   ```bash
+   huggingface-cli login
+   ```
 
 ### Verify TensorFlow GPU
 
@@ -76,7 +101,6 @@ python -c "import tensorflow as tf; print('GPUs:', tf.config.list_physical_devic
 
 ```bash
 python full_imagenet_train.py \
-    --data_dir /path/to/imagenet \
     --out ./results_resnet50_baseline \
     --depth 50 \
     --sd 0 \
@@ -90,7 +114,6 @@ python full_imagenet_train.py \
 
 ```bash
 python full_imagenet_train.py \
-    --data_dir /path/to/imagenet \
     --out ./results_resnet50_sd \
     --depth 50 \
     --sd 1 \
@@ -105,7 +128,6 @@ python full_imagenet_train.py \
 
 ```bash
 python full_imagenet_train.py \
-    --data_dir /path/to/imagenet \
     --out ./results_resnet101_full \
     --depth 101 \
     --sd 1 \
@@ -122,7 +144,6 @@ python full_imagenet_train.py \
 
 ```bash
 python full_imagenet_train.py \
-    --data_dir /path/to/imagenet \
     --out ./results_resnet50_large_batch \
     --depth 50 \
     --sd 1 \

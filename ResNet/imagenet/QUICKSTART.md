@@ -5,13 +5,14 @@
 1. **Hardware Requirements:**
    - GPU with at least 16GB VRAM (recommended: V100, A100, or RTX 3090/4090)
    - 64GB+ RAM
-   - 500GB+ storage for ImageNet dataset
+   - 200GB+ storage for dataset cache (automatic download via Hugging Face)
    - For parallel training: 2 GPUs with 32GB VRAM each
 
 2. **Software Requirements:**
    - Python 3.8+
    - CUDA 11.2+ and cuDNN 8.1+ (for GPU support)
    - TensorFlow 2.12+
+   - Hugging Face account (free)
 
 ## Installation
 
@@ -27,24 +28,18 @@ pip install -r requirements.txt
 pip install tensorflow[and-cuda]>=2.12.0
 ```
 
-## Step 1: Prepare ImageNet Dataset
+## Step 1: Setup Hugging Face Access
 
-Download ImageNet (ILSVRC 2012) from:
-- Official source: http://www.image-net.org/
-- Kaggle: https://www.kaggle.com/c/imagenet-object-localization-challenge
+**One-time setup:**
 
-Organize the dataset as:
-```
-/path/to/imagenet/
-├── train/
-│   ├── n01440764/
-│   │   ├── *.JPEG
-│   └── ... (1000 classes)
-└── val/
-    ├── n01440764/
-    │   ├── *.JPEG
-    └── ... (1000 classes)
-```
+1. Create a free account at https://huggingface.co/
+2. Accept dataset terms at https://huggingface.co/datasets/ILSVRC/imagenet-1k
+3. Login via CLI:
+   ```bash
+   huggingface-cli login
+   ```
+
+The ImageNet dataset (~150GB) will be automatically downloaded and cached on first use.
 
 ## Step 2: Choose Your Training Approach
 
@@ -53,7 +48,6 @@ Organize the dataset as:
 **Baseline (No Stochastic Depth):**
 ```bash
 python full_imagenet_train.py \
-    --data_dir /path/to/imagenet \
     --out ./results_baseline \
     --depth 50 \
     --sd 0 \
@@ -64,7 +58,6 @@ python full_imagenet_train.py \
 **With Stochastic Depth:**
 ```bash
 python full_imagenet_train.py \
-    --data_dir /path/to/imagenet \
     --out ./results_stochastic_depth \
     --depth 50 \
     --sd 1 \
@@ -78,7 +71,6 @@ python full_imagenet_train.py \
 **Sequential Training (recommended for single GPU):**
 ```bash
 python compare_training.py \
-    --data_dir /path/to/imagenet \
     --mode sequential \
     --depth 50 \
     --epochs 120 \
@@ -88,7 +80,6 @@ python compare_training.py \
 **Parallel Training (for dual GPU systems):**
 ```bash
 python compare_training.py \
-    --data_dir /path/to/imagenet \
     --mode parallel \
     --gpu_split \
     --depth 50 \
